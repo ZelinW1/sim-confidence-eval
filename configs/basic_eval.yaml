@@ -1,0 +1,32 @@
+experiment_name: "test_run_001"
+output_dir: "./outputs/run_001"
+
+data:
+  mode: "paired"
+  sim_path: "./data/sim/"
+  real_path: "./data/real/"
+  iou_threshold: 0.8   # IoU 阈值：Sim标注框与Real标注框重叠度低于此值将被剔除
+  batch_size: 32
+  num_workers: 0
+  image_size: [640, 480] # [H, W] 所有图片都会被resize到这个尺寸进算法
+
+metrics:
+  - name: "PSNR"
+    params:
+      psnr_max: 50.0  # 用于将结果归一化到 [0,1] 的经验上限
+  - name: "SSIM"
+  - name: "FSIM"
+    params:
+      chromatic: True
+  - name: "LPIPS"
+    params:
+      net: "vgg" # alex, vgg, squeeze
+      version: "0.1"
+      lpips_max: 1.0  # 用于将结果归一化到 [0,1] 的经验上限
+  - name: "FID"
+    params:
+      feature: 2048  # 使用的特征维度
+
+visualization:
+  plot_hist: True  # 绘制分数分布直方图
+  save_bad_cases: True # 保存分数最低的Top-K对图片
