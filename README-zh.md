@@ -9,11 +9,12 @@
 ## 主要特性
 
 - 🎯 **多种评价指标**：包括 PSNR、SSIM、FSIM、LPIPS、FID 等
-- ⚡ **GPU 加速**：充分利用 GPU 进行批处理加速
+- ⚡ **GPU 加速**：充分利用 GPU 进行批处理加速，自动设备管理
 - 📊 **灵活配置**：基于 YAML 的配置系统，支持命令行覆盖
 - 📈 **结果可视化**：生成分数分布直方图、低分案例对比等
 - 🔧 **模块化设计**：易于扩展新指标和数据格式
 - 📝 **完整日志**：详细的运行日志和配置备份
+- 🔢 **自动归一化**：支持将不同指标归一化到 [0, 1] 范围，便于统一比较
 
 ## 项目结构
 
@@ -25,10 +26,22 @@ SimConfidenceEval/
 │   ├── basic_eval.yaml             # 基础评估配置
 │   └── dataset_eval.yaml           # 数据集评估配置
 ├── data/                            # 数据文件目录
-│   ├── sim/                        # 仿真数据
-│   │   └── warship/               # 示例类别：战舰
-│   └── real/                       # 真实数据
-│       └── warship/
+│   ├── paired/                         # 配对评估用（局部/成对指标）
+│   │   ├── real/
+│   │   │   └── <category>/
+│   │   │       ├── xxx.jpg
+│   │   │       ├── xxx.txt             # 可选：YOLO 标注（与图像同名）
+│   │   │       └── ...
+│   │   └── sim/
+│   │       └── <category>/
+│   │           ├── xxx.jpg
+│   │           ├── xxx.txt             # 可选：YOLO 标注（与图像同名）
+│   │           └── ...
+│   └── global/                         # 全局评估用（分布指标，如 FID）
+│       ├── real/
+│       │   └── ...                     # 真实数据全集
+│       └── sim/
+│           └── ...                     # 仿真数据全集
 ├── src/                             # 源代码
 │   ├── core/                       # 核心模块
 │   │   └── evaluator.py           # 评估器主类
@@ -137,6 +150,19 @@ python main.py --config configs/basic_eval.yaml
 python main.py --config configs/basic_eval.yaml --output ./outputs/custom_run
 ```
 
+### 5. 计算 FID 上下限（归一化基线）
+
+使用 `calculate_global_best_worst.py` 计算参考集的 FID 最佳/最差基线，并保存到 `fid_baselines.txt`：
+
+```powershell
+python .\calculate_global_best_worst.py
+```
+
+说明：
+- FID_best：将参考集随机切分为两半，多次计算 FID，取中位数。
+- FID_worst：将参考集与独立图像集（CIFAR-10 或 ImageNet）计算 FID，作为下限。
+- 归一化公式：$S_{fid} = \frac{FID_{worst} - FID}{FID_{worst} - FID_{best}}$，范围 [0, 1]。
+
 ## 输出结果
 
 运行完成后，输出目录包含：
@@ -144,17 +170,31 @@ python main.py --config configs/basic_eval.yaml --output ./outputs/custom_run
 ```
 outputs/run_001/
 ├── config_backup.yaml                    # 配置文件备份
-├── final_report_summary.csv              # 摘要报告（每个指标的均值、中位数等）
-├── final_report_detailed.csv             # 详细报告（每对图像的各指标得分）
+├── final_report_summary.csv              # 摘要报告（每个类别的均值和标准差）
+├── final_report_detailed.csv             # 详细报告（每对图像的详细得分）
 ├── plots/
-│   ├── score_distribution_PSNR.png      # 分数分布直方图
-│   ├── score_distribution_SSIM.png
-│   ├── ...
-│   ├── worst_10_case_comparison.png     # 低分案例对比
+│   ├── PSNR_dist.png                    # 分数分布直方图
+│   ├── SSIM_dist.png
 │   └── ...
 └── logs/
     └── eval_*.log                       # 运行日志
 ```
+
+### 输出文件说明
+
+**详细报告 (final_report_detailed.csv)**：
+- 按类别分组，每个类别包含：
+  - 类别标题行
+  - 每对图像的原始指标得分
+  - 空列分隔符
+  - 每对图像的归一化指标得分
+  - MEAN 行：各指标的均值（原始值和归一化值）
+  - STD 行：各指标的标准差（原始值和归一化值）
+
+**简略报告 (final_report_summary.csv)**：
+- 每个类别一行
+- 列结构：category | {metric}_mean | {metric}_std | 空列 | {metric}_norm_mean | {metric}_norm_std
+- 便于快速对比不同类别的整体表现
 
 ## 配置详解
 
@@ -234,10 +274,13 @@ metrics:
 
 ## 性能建议
 
-- 使用 GPU：确保 CUDA 可用，评估速度可提升 10-100 倍
-- 批大小调整：根据 GPU 显存调整 `batch_size`（推荐 32-128）
-- 图像尺寸：较小尺寸加速处理，较大尺寸提升精度（推荐 640x480）
-- 指标选择：LPIPS/FID 较慢，优先使用古典指标进行快速评估
+- **使用 GPU**：确保 CUDA 可用，评估速度可提升 10-100 倍
+  - 框架自动检测并管理 GPU/CPU 设备切换
+  - FID 等全局指标已优化，确保在 GPU 上高效运行
+- **批大小调整**：根据 GPU 显存调整 `batch_size`（推荐 32-128）
+- **图像尺寸**：较小尺寸加速处理，较大尺寸提升精度（推荐 640x480）
+- **指标选择**：LPIPS/FID 较慢，优先使用古典指标进行快速评估
+- **归一化结果**：在配置中启用 `need_normalize_result` 可同时获得原始和归一化分数
 
 ## 依赖说明
 

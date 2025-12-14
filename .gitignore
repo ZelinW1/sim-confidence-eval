@@ -58,8 +58,11 @@ htmlcov/
 .hypothesis/
 
 # Data and Models
-data/sim/
-data/real/
+data/global/sim
+data/global/real
+data/paired/sim
+data/paired/real
+data/image_net
 *.pth
 *.pt
 *.ckpt
@@ -75,8 +78,6 @@ plots/
 results/
 run_*/
 experiments/
-data/
-test/
 scripts/
 
 # Temporary and Cache Files

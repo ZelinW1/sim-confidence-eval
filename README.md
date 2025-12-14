@@ -9,11 +9,12 @@ This platform integrates **multiple image similarity evaluation metrics** (class
 ## Key Features
 
 - 🎯 **Multiple Evaluation Metrics**: Including PSNR, SSIM, FSIM, LPIPS, FID, etc.
-- ⚡ **GPU Acceleration**: Full GPU support for batch processing acceleration
+- ⚡ **GPU Acceleration**: Full GPU support for batch processing with automatic device management
 - 📊 **Flexible Configuration**: YAML-based configuration system with command-line override support
 - 📈 **Result Visualization**: Generates score distribution histograms, worst-case comparisons, etc.
 - 🔧 **Modular Design**: Easy to extend with new metrics and data formats
 - 📝 **Comprehensive Logging**: Detailed run logs and configuration backups
+- 🔢 **Automatic Normalization**: Supports normalizing different metrics to [0, 1] range for unified comparison
 
 ## Project Structure
 
@@ -25,10 +26,22 @@ SimConfidenceEval/
 │   ├── basic_eval.yaml             # Basic evaluation configuration
 │   └── dataset_eval.yaml           # Dataset evaluation configuration
 ├── data/                            # Data files directory
-│   ├── sim/                        # Simulated data
-│   │   └── warship/               # Example category: warship
-│   └── real/                       # Real data
-│       └── warship/
+│   ├── paired/                         # For paired evaluation (local/paired metrics)
+│   │   ├── real/
+│   │   │   └── <category>/
+│   │   │       ├── xxx.jpg
+│   │   │       ├── xxx.txt             # Optional: YOLO annotations (same name as image)
+│   │   │       └── ...
+│   │   └── sim/
+│   │       └── <category>/
+│   │           ├── xxx.jpg
+│   │           ├── xxx.txt             # Optional: YOLO annotations (same name as image)
+│   │           └── ...
+│   └── global/                         # For global evaluation (distribution metrics like FID)
+│       ├── real/
+│       │   └── ...                     # Full real dataset
+│       └── sim/
+│           └── ...                     # Full simulated dataset
 ├── src/                             # Source code
 │   ├── core/                       # Core module
 │   │   └── evaluator.py           # Main evaluator class
@@ -137,6 +150,19 @@ python main.py --config configs/dataset_eval.yaml
 python main.py --config configs/basic_eval.yaml --output ./outputs/custom_run
 ```
 
+### 5. Compute FID Baselines (Best/Worst)
+
+Use `calculate_global_best_worst.py` to compute FID best/worst baselines and save to `fid_baselines.txt`:
+
+```powershell
+python .\calculate_global_best_worst.py
+```
+
+Notes:
+- FID_best: Randomly split the reference dataset into two halves multiple times and take the median FID.
+- FID_worst: Compute FID between the reference dataset and an independent dataset (CIFAR-10 or ImageNet).
+- Normalization formula: $S_{fid} = \frac{FID_{worst} - FID}{FID_{worst} - FID_{best}}$, in [0, 1].
+
 ## Output Results
 
 After evaluation completes, the output directory contains:
@@ -144,17 +170,31 @@ After evaluation completes, the output directory contains:
 ```
 outputs/run_001/
 ├── config_backup.yaml                    # Configuration file backup
-├── final_report_summary.csv              # Summary report (mean, median, etc. for each metric)
-├── final_report_detailed.csv             # Detailed report (scores for each image pair)
+├── final_report_summary.csv              # Summary report (mean and std for each category)
+├── final_report_detailed.csv             # Detailed report (detailed scores for each image pair)
 ├── plots/
-│   ├── score_distribution_PSNR.png      # Score distribution histograms
-│   ├── score_distribution_SSIM.png
-│   ├── ...
-│   ├── worst_10_case_comparison.png     # Worst-case comparisons
+│   ├── PSNR_dist.png                    # Score distribution histograms
+│   ├── SSIM_dist.png
 │   └── ...
 └── logs/
     └── eval_*.log                       # Run logs
 ```
+
+### Output File Details
+
+**Detailed Report (final_report_detailed.csv)**:
+- Grouped by category, each category contains:
+  - Category header row
+  - Original metric scores for each image pair
+  - Empty column separator
+  - Normalized metric scores for each image pair
+  - MEAN row: mean values for each metric (original and normalized)
+  - STD row: standard deviation for each metric (original and normalized)
+
+**Summary Report (final_report_summary.csv)**:
+- One row per category
+- Column structure: category | {metric}_mean | {metric}_std | empty column | {metric}_norm_mean | {metric}_norm_std
+- Convenient for quickly comparing overall performance across different categories
 
 ## Configuration Details
 
@@ -234,10 +274,13 @@ Modify the `build_dataloader` function in `src/data/datasets.py` to support othe
 
 ## Performance Recommendations
 
-- Use GPU: Ensure CUDA is available for 10-100x speedup
-- Batch size adjustment: Adjust `batch_size` based on GPU memory (recommended: 32-128)
-- Image size: Smaller sizes for faster processing, larger sizes for better accuracy (recommended: 640x480)
-- Metric selection: LPIPS/FID are slower; prioritize classical metrics for quick evaluation
+- **Use GPU**: Ensure CUDA is available for 10-100x speedup
+  - Framework automatically detects and manages GPU/CPU device switching
+  - Global metrics like FID are optimized to run efficiently on GPU
+- **Batch Size Adjustment**: Adjust `batch_size` based on GPU memory (recommended: 32-128)
+- **Image Size**: Smaller sizes for faster processing, larger sizes for better accuracy (recommended: 640x480)
+- **Metric Selection**: LPIPS/FID are slower; prioritize classical metrics for quick evaluation
+- **Normalized Results**: Enable `need_normalize_result` in configuration to get both original and normalized scores
 
 ## Dependency Notes
 
