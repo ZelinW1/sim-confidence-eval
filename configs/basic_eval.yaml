@@ -1,11 +1,19 @@
-experiment_name: "test_run_001"
-output_dir: "./outputs/run_001"
+experiment_name: "test_warship"
+output_dir: "./outputs/test_warship"
 
-data:
-  mode: "paired"
-  sim_path: "./data/sim/"
-  real_path: "./data/real/"
+paired_data:
+  sim_path: "./data/paired/sim/"
+  real_path: "./data/paired/real/"
+  use_iou: True        # 是否使用IoU剔除不匹配的图像对 (只对paired图像评估有效)
   iou_threshold: 0.8   # IoU 阈值：Sim标注框与Real标注框重叠度低于此值将被剔除
+  batch_size: 32
+  num_workers: 0
+  image_size: [640, 480] # [H, W] 所有图片都会被resize到这个尺寸进算法
+
+global_data:
+  sim_path: "./data/global/sim/"    # 用于全局指标计算的模拟数据集路径
+  real_path: "./data/global/real/"  # 用于全局指标计算的真实数据集路径
+  use_iou: False                     # 是否使用IoU剔除不匹配的图像
   batch_size: 32
   num_workers: 0
   image_size: [640, 480] # [H, W] 所有图片都会被resize到这个尺寸进算法
@@ -13,20 +21,31 @@ data:
 metrics:
   - name: "PSNR"
     params:
+      need_normalize_result: True  # 是否将评估结果归一化用于对比
       psnr_max: 50.0  # 用于将结果归一化到 [0,1] 的经验上限
   - name: "SSIM"
+    params:
+      need_normalize_result: True  # 是否将评估结果归一化用于对比
+  - name: "MS_SSIM"
+    params:
+      scales: 5  # 多尺度SSIM的尺度数量
+      need_normalize_result: True  # 是否将评估结果归一化用于对比
   - name: "FSIM"
     params:
       chromatic: True
+      need_normalize_result: True  # 是否将评估结果归一化用于对比
   - name: "LPIPS"
     params:
       net: "vgg" # alex, vgg, squeeze
       version: "0.1"
+      need_normalize_result: True  # 是否将评估结果归一化用于对比
       lpips_max: 1.0  # 用于将结果归一化到 [0,1] 的经验上限
   - name: "FID"
     params:
       feature: 2048  # 使用的特征维度
+      need_normalize_result: True  # 是否将评估结果归一化用于对比
 
 visualization:
   plot_hist: True  # 绘制分数分布直方图
   save_bad_cases: True # 保存分数最低的Top-K对图片
+

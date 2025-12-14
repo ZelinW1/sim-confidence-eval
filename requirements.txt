@@ -5,6 +5,7 @@ torchvision>=0.15.0
 # Metrics and Evaluation
 torchmetrics>=0.11.0
 kornia>=0.7.0
+piq>=0.30.0
 
 # Data Processing and I/O
 numpy>=1.21.0

@@ -3,11 +3,11 @@ import tqdm
 import os
 from collections import defaultdict
 
-from src.data.datasets import build_dataloader
+from src.data.datasets import build_paired_dataloader, build_global_dataloader
 from src.utils.logger import setup_logger
 from src.utils.visualizer import Visualizer
 
-from src.metrics.classical import PSNR, SSIM, FSIM
+from src.metrics.classical import PSNR, SSIM, FSIM, MS_SSIM
 from src.metrics.deep import LPIPS, FID
 
 class Evaluator:
@@ -30,7 +30,8 @@ class Evaluator:
             self.metrics = self._load_metrics(cfg['metrics'])
         
         # 3. Build DataLoader
-        self.loader = build_dataloader(cfg)
+        self.loader_paired = build_paired_dataloader(cfg['paired_data'])
+        self.loader_global_sim, self.loader_global_real = build_global_dataloader(cfg['global_data'])
         
         # 4. Storage for results
         # 结构: self.results['SSIM'] = [{'id': 'x', 'score': 0.8, 'sim_path': '...', 'real_path': '...'}, ...]
@@ -42,6 +43,7 @@ class Evaluator:
         available_metrics = {
             'PSNR': PSNR,
             'SSIM': SSIM,
+            'MS_SSIM': MS_SSIM,
             'FSIM': FSIM,
             'LPIPS': LPIPS,
             'FID': FID
@@ -76,59 +78,100 @@ class Evaluator:
         for m in self.metrics:
             m.eval()
 
+        # 先处理 paired 数据集（局部指标）
+        self.logger.info("Evaluating on paired dataset...")
         # 进度条
-        pbar = tqdm.tqdm(self.loader, desc="Processing Batches")
+        pbar = tqdm.tqdm(self.loader_paired, desc="Processing Batches")
         
         with torch.no_grad(): # 全局禁用梯度，节省显存
             for batch_idx, batch in enumerate(pbar):
                 # 支持两种 dataloader 输出格式：
                 # (sim_roi, real_roi, ids) 或 (sim_roi, real_roi, ids, full_sim, full_real)
                 if len(batch) == 3:
-                    roi_sim_imgs, roi_real_imgs, ids = batch
-                    full_sim_imgs, full_real_imgs = None, None
-                elif len(batch) == 5:
-                    roi_sim_imgs, roi_real_imgs, full_sim_imgs, full_real_imgs, ids = batch
+                    sim_imgs, real_imgs, ids = batch
                 else:
                     # 不支持的返回结构，跳过
                     self.logger.error(f"Unexpected batch structure of length {len(batch)}. Skipping batch {batch_idx}.")
                     continue
 
-                # 1. Move ROI tensors to device
-                roi_sim_imgs = roi_sim_imgs.to(self.device)
-                roi_real_imgs = roi_real_imgs.to(self.device)
-
-                # 如果存在 full-image tensors，也移动到 device
-                if full_sim_imgs is not None and full_real_imgs is not None:
-                    full_sim_imgs = full_sim_imgs.to(self.device)
-                    full_real_imgs = full_real_imgs.to(self.device)
+                # 1. Move tensors to device
+                sim_imgs = sim_imgs.to(self.device)
+                real_imgs = real_imgs.to(self.device)
 
                 # 2. Iterate metrics
                 for metric in self.metrics:
                     if getattr(metric, 'is_global', False):
-                        # Global Metric (e.g., FID): 使用 full-image（如果可用），否则使用 ROI
-                        if full_sim_imgs is not None and full_real_imgs is not None:
-                            metric(full_sim_imgs, full_real_imgs)
-                        else:
-                            # 回退到 ROI
-                            metric(roi_sim_imgs, roi_real_imgs)
+                        continue
+
+                    scores = metric(sim_imgs, real_imgs) # Returns (B,) tensor
+
+                    # 如果 scores 是 tuple (ori_result, normalized_result) 都保存
+                    if isinstance(scores, tuple):
+                        ori_scores, norm_scores = scores
+                        scores_list_ori = ori_scores.cpu().tolist()
+                        scores_list_norm = norm_scores.cpu().tolist()
                     else:
-                        # Local Metric (SSIM, LPIPS): 使用 ROI 并记录单张分数
-                        scores = metric(roi_sim_imgs, roi_real_imgs) # Returns (B,) tensor
+                        scores_list_ori = scores.cpu().tolist()
+                        scores_list_norm = None
 
-                        # 将 Tensor 转为 Python list
-                        scores_list = scores.cpu().tolist()
+                    # 记录结果
+                    for i, score in enumerate(scores_list_ori):
+                        # 这里假设 loader 在 Dataset 中返回的顺序和 ids 是一致的
+                        record = {
+                            'id': ids[i],
+                            'score_ori': scores_list_ori[i],
+                            'score_norm': scores_list_norm[i] if scores_list_norm is not None else None,
+                            # 如果需要，可以在 Dataset 中额外返回路径并记录
+                        }
+                        self.results[metric.name].append(record)
 
-                        # 记录结果
-                        for i, score in enumerate(scores_list):
-                            # 我们这里假设 loader 在 Dataset 中返回的顺序和 ids 是一致的
-                            record = {
-                                'id': ids[i],
-                                'score': score,
-                                # 如果需要，可以在 Dataset 中额外返回路径并记录
-                            }
-                            self.results[metric.name].append(record)
+        # 3. 再处理 global 数据集（全局指标）
+        self.logger.info("Evaluating on global dataset...")
+        # 进度条   sim 和 real 分开单独迭代
+        pbar_global_sim = tqdm.tqdm(self.loader_global_sim, desc="Processing Global Sim Batches", total=len(self.loader_global_sim))
+        
+        with torch.no_grad(): # 全局禁用梯度，节省显存
+            for batch_idx, batch_sim in enumerate(pbar_global_sim):
+                # 支持两种 dataloader 输出格式：
+                # (sim_full, ids) 或 (sim_full, ids, roi_sim)
+                if len(batch_sim) == 2:
+                    full_sim_imgs, ids_sim = batch_sim
+                elif len(batch_sim) == 3:
+                    full_sim_imgs, ids_sim, _ = batch_sim
+                else:
+                    self.logger.error(f"Unexpected sim batch structure of length {len(batch_sim)}. Skipping batch {batch_idx}.")
+                    continue
 
-        # 3. Compute Global Metrics (Post-Loop)
+                # 1. Move full-image tensors to device
+                full_sim_imgs = full_sim_imgs.to(self.device)
+
+                # 2. Iterate metrics
+                for metric in self.metrics:
+                    if getattr(metric, 'is_global', False):
+                        metric.update(full_sim_imgs, real=False)
+
+        pbar_global_real = tqdm.tqdm(self.loader_global_real, desc="Processing Global Real Batches", total=len(self.loader_global_real))
+
+        with torch.no_grad(): # 全局禁用梯度，节省显存
+            for batch_idx, batch_real in enumerate(pbar_global_real):
+                # 支持两种 dataloader 输出格式：
+                # (real_full, ids) 或 (real_full, ids, roi_real)
+                if len(batch_real) == 2:
+                    full_real_imgs, ids_real = batch_real
+                elif len(batch_real) == 3:
+                    full_real_imgs, ids_real, _ = batch_real
+                else:
+                    self.logger.error(f"Unexpected real batch structure of length {len(batch_real)}. Skipping batch {batch_idx}.")
+                    continue
+
+                # 1. Move full-image tensors to device
+                full_real_imgs = full_real_imgs.to(self.device)
+
+                # 2. Iterate metrics
+                for metric in self.metrics:
+                    if getattr(metric, 'is_global', False):
+                        metric.update(full_real_imgs, real=True)
+
         for metric in self.metrics:
             if getattr(metric, 'is_global', False):
                 self.logger.info(f"Computing global metric: {metric.name}...")

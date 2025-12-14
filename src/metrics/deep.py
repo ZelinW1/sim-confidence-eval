@@ -32,8 +32,9 @@ class LPIPS(BaseMetric):
             # 某些 torchmetrics 版本的 metric 可能不是 nn.Module 或者不支持 to(); ignore if so
             pass
         
-        # 标记为局部指标（每张图都能算出一个分）
+        # 标记为非局部指标
         self.is_global = False 
+        self.need_normalize_result = self.cfg.get("need_normalize_result", True)
         self.lpips_max = self.cfg.get("lpips_max", 1.0)  # 用于归一化的最大 LPIPS 值
 
     def forward(self, preds, target):
@@ -46,7 +47,9 @@ class LPIPS(BaseMetric):
         # LPIPS 计算量大，确保在 eval 模式且无梯度，节省显存
         with torch.no_grad():
             score = self.metric(preds, target)
-            
+        
+        if self.need_normalize_result:
+            return score, self._normalize(score)
         return score
     
     def _normalize(self, x):
@@ -83,25 +86,27 @@ class FID(BaseMetric):
 
     def forward(self, preds, target=None):
         """
-        FID 的 forward 仅用于更新统计量 (Update)，不返回具体分数。
-        为了兼容 Pipeline 接口，返回 -1.0 或 None。
-        
-        :param preds: Sim 图像 batch, [0, 1]
-        :param target: Real 图像 batch, [0, 1]。如果是 Unpaired 模式，Target 可以是一批随机的 Real 图。
+        FID 不支持单次计算，需要累积特征后计算。
+        """
+        raise NotImplementedError("FID metric does not support single forward computation. Use update() and compute() instead.")       
+    
+    def update(self, preds, real=False):
+        """
+        用于累积批次结果，适用于全局指标（如 FID）
+        :param preds: 图像 batch, [0, 1]
+        :param real: 是否为真实数据
         """
         preds = self.prepare_data(preds)
-        
-        # 更新 Sim 分布统计
-        self.metric.update(preds, real=False)
-        
-        # 更新 Real 分布统计
-        # 如果是 Paired 数据集，每次这里都会传 target；
-        # 如果是 Unpaired，这里也会接收到一批 Real 数据。
-        if target is not None:
-            target = self.prepare_data(target)
-            self.metric.update(target, real=True)
-        
-        return torch.tensor(-1.0) # Dummy value
+        # 确保内部 metric（例如 torchmetrics 的 Inception 特征提取器）被迁移到与输入相同的设备
+        # 某些 torchmetrics 实现会延迟构建内部模型或在 to() 调用后未正确迁移子模块，
+        # 因此在 update 前显式将 metric 移到 preds.device
+        try:
+            self.metric = self.metric.to(preds.device)
+        except Exception:
+            # 忽略不能 to() 的情况
+            pass
+
+        self.metric.update(preds, real=real)
 
     def compute(self):
         """

@@ -23,6 +23,13 @@ class BaseMetric(nn.Module, ABC):
         """
         pass
 
+    def update(self, *args, **kwargs):
+        """
+        用于累积批次结果，适用于全局指标（如 FID）
+        默认不实现，子类可重写
+        """
+        pass
+
     def prepare_data(self, x):
         """
         统一的数据预处理，例如确保维度是 BCHW，值域是 0-1
@@ -30,8 +37,18 @@ class BaseMetric(nn.Module, ABC):
         if x.dim() == 3: # CHW -> BCHW
             x = x.unsqueeze(0)
         # 这里假设输入已经是 Tensor 且归一化到了 [0,1]
-        # 如果需要特定算法的特殊归一化（如 [-1,1]），可在子类重写
-        return x.to(self.device)
+        # 为了确保数据被移动到 metric 实际所在的设备（在外部可能调用了 .to(device)），
+        # 优先尝试从 module 的参数或 buffers 获取 device；如果没有参数/缓冲区，则回退到
+        # 初始化时的 self.device 配置。
+        try:
+            dev = next(self.parameters()).device
+        except StopIteration:
+            try:
+                dev = next(self.buffers()).device
+            except StopIteration:
+                dev = self.device
+
+        return x.to(dev)
     
     @abstractmethod
     def _normalize(self, x):

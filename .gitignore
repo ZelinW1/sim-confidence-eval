@@ -75,6 +75,9 @@ plots/
 results/
 run_*/
 experiments/
+data/
+test/
+scripts/
 
 # Temporary and Cache Files
 *.tmp

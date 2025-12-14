@@ -33,14 +33,19 @@ class Visualizer:
         ids = [item['id'] for item in results_dict[first_metric]]
 
         # 扁平 DataFrame：id (原始 id，如 'ship\\1_1743') + 各 metric 列
+        # 保持与旧行为兼容：flat_df 仍然只包含原始分数（优先使用 'score_ori'，回退到 'score'）
         flat_df = pd.DataFrame({'id': ids})
         for metric_name in metric_names:
-            scores = [item['score'] for item in results_dict[metric_name]]
+            scores = [item.get('score_ori', item.get('score')) for item in results_dict[metric_name]]
             flat_df[metric_name] = scores
 
         # 2) 生成按类别分组的数据结构（category, file_id, metrics...）
         # 处理 ID：支持 'cat\\file' 或 'cat/file' 或 仅 'file'
         rows = []
+        # 归一化列名列表
+        norm_metric_names = [m + '_norm' for m in metric_names]
+        # 分隔列（空列）键名，CSV 中表现为一个空列（这里用空字符串键）
+        sep_col = ''
         for idx, full_id in enumerate(ids):
             # 处理分隔符，优先反斜杠（Windows 风格）
             if isinstance(full_id, str) and ('\\' in full_id or '/' in full_id):
@@ -55,8 +60,16 @@ class Visualizer:
                 file_id = full_id
 
             row = {'category': category, 'id': file_id}
+            # 原始分数（兼容 'score_ori' / 'score'）
             for metric_name in metric_names:
-                row[metric_name] = results_dict[metric_name][idx]['score']
+                row[metric_name] = results_dict[metric_name][idx].get('score_ori', results_dict[metric_name][idx].get('score'))
+            # 插入分隔列（空）
+            row[sep_col] = ''
+            # 归一化分数（可能为 None）
+            for m, nm in zip(metric_names, norm_metric_names):
+                val = results_dict[m][idx].get('score_norm') if isinstance(results_dict[m][idx], dict) else None
+                # 将 None 保持为 None/np.nan 以利于 pandas 计算均值/std
+                row[nm] = val if val is not None else np.nan
             rows.append(row)
 
         grouped = {}
@@ -67,47 +80,79 @@ class Visualizer:
         detailed_path = os.path.join(self.output_dir, filename.replace('.csv', '_detailed.csv'))
         detailed_rows = []
         for cat, items in grouped.items():
-            # 可选：在分组前插入一行作为分组标题（在 CSV 中用空行和一行标题）
-            # 这里我们插入一行 category header（category 放在 category 列，id 置空）
-            detailed_rows.append({'category': cat, 'id': '' , **{m: '' for m in metric_names}})
+            # 在分组前插入一行 category header（category 放在 category 列，id 置空）
+            header_row = {'category': cat, 'id': ''}
+            # 原始 metric 列空值
+            header_row.update({m: '' for m in metric_names})
+            # 分隔列与归一化列空值
+            header_row[sep_col] = ''
+            header_row.update({nm: '' for nm in norm_metric_names})
+            detailed_rows.append(header_row)
 
-            # 每个文件的记录
+            # 每个文件的记录（items 已包含 norm 列）
             for it in items:
-                detailed_rows.append(it)
+                # 确保每条记录包含所有列（缺失则填 NaN/''）
+                rec = {'category': it.get('category', ''), 'id': it.get('id', '')}
+                for m in metric_names:
+                    rec[m] = it.get(m, np.nan)
+                rec[sep_col] = it.get(sep_col, '')
+                for nm in norm_metric_names:
+                    rec[nm] = it.get(nm, np.nan)
+                detailed_rows.append(rec)
 
-            # 统计均值与标准差
+            # 统计均值与标准差（包括归一化列）
             df_block = pd.DataFrame(items)
             means = df_block[metric_names].mean()
             stds = df_block[metric_names].std()
+            means_norm = df_block[norm_metric_names].mean()
+            stds_norm = df_block[norm_metric_names].std()
 
             mean_row = {'category': cat, 'id': 'MEAN'}
             std_row = {'category': cat, 'id': 'STD'}
             for m in metric_names:
                 mean_row[m] = means[m]
                 std_row[m] = stds[m]
+            mean_row[sep_col] = ''
+            std_row[sep_col] = ''
+            for nm in norm_metric_names:
+                mean_row[nm] = means_norm[nm]
+                std_row[nm] = stds_norm[nm]
 
             detailed_rows.append(mean_row)
             detailed_rows.append(std_row)
 
             # 插入空行以作分组间隔
-            detailed_rows.append({'category': '', 'id': '' , **{m: '' for m in metric_names}})
+            gap_row = {'category': '', 'id': ''}
+            gap_row.update({m: '' for m in metric_names})
+            gap_row[sep_col] = ''
+            gap_row.update({nm: '' for nm in norm_metric_names})
+            detailed_rows.append(gap_row)
 
         detailed_df = pd.DataFrame(detailed_rows)
         os.makedirs(self.output_dir, exist_ok=True)
         detailed_df.to_csv(detailed_path, index=False)
         print(f"Detailed report saved to {detailed_path}")
 
-        # 4) 保存简略版 CSV：每个 category 一行，仅包含每个指标的 mean/std
+        # 4) 保存简略版 CSV：每个 category 一行，仅包含每个指标的 mean/std，并带归一化的 mean/std
         summary_path = os.path.join(self.output_dir, filename.replace('.csv', '_summary.csv'))
         summary_rows = []
         for cat, items in grouped.items():
             df_block = pd.DataFrame(items)
             means = df_block[metric_names].mean()
             stds = df_block[metric_names].std()
+            means_norm = df_block[norm_metric_names].mean()
+            stds_norm = df_block[norm_metric_names].std()
             row = {'category': cat}
+            # 原始 metric mean/std
             for m in metric_names:
                 row[f'{m}_mean'] = means[m]
                 row[f'{m}_std'] = stds[m]
+            # 分隔列（空）
+            row[sep_col] = ''
+            # 归一化 metric mean/std
+            for m, nm in zip(metric_names, norm_metric_names):
+                row[f'{m}_norm_mean'] = means_norm[nm]
+                row[f'{m}_norm_std'] = stds_norm[nm]
             summary_rows.append(row)
 
         summary_df = pd.DataFrame(summary_rows)
