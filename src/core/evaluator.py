@@ -8,7 +8,7 @@ from src.utils.logger import setup_logger
 from src.utils.visualizer import Visualizer
 
 from src.metrics.classical import PSNR, SSIM, FSIM, MS_SSIM
-from src.metrics.deep import LPIPS, FID
+from src.metrics.deep import LPIPS, FID, KID, MKMMD
 
 class Evaluator:
     def __init__(self, cfg):
@@ -46,7 +46,9 @@ class Evaluator:
             'MS_SSIM': MS_SSIM,
             'FSIM': FSIM,
             'LPIPS': LPIPS,
-            'FID': FID
+            'FID': FID,
+            'KID': KID,
+            'MKMMD': MKMMD
         }
         
         loaded = []
@@ -126,6 +128,12 @@ class Evaluator:
                         self.results[metric.name].append(record)
 
         # 3. 再处理 global 数据集（全局指标）
+        # 无全局指标则跳过
+        if not any(getattr(m, 'is_global', False) for m in self.metrics):
+            self.logger.info("No global metrics found. Skipping global evaluation.")
+            self.finalize()
+            return
+
         self.logger.info("Evaluating on global dataset...")
         # 进度条   sim 和 real 分开单独迭代
         pbar_global_sim = tqdm.tqdm(self.loader_global_sim, desc="Processing Global Sim Batches", total=len(self.loader_global_sim))

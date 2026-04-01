@@ -156,7 +156,37 @@ class Visualizer:
             summary_rows.append(row)
 
         summary_df = pd.DataFrame(summary_rows)
-        summary_df.to_csv(summary_path, index=False)
+
+        # 如果非空：计算所有类别的均值与标准差（针对 summary 表中的 mean/std 列），
+        # 并在所有类别行写完后，插入一行空行，再插入一行全局的 mean/std 汇总行
+        if not summary_df.empty:
+            mean_cols = [c for c in summary_df.columns if c.endswith('_mean')]
+            std_cols = [c for c in summary_df.columns if c.endswith('_std')]
+
+            # 对各 mean/std 列取所有类别的均值（对于 std 列通常也取平均作为汇总指标）
+            global_means = summary_df[mean_cols].mean()
+            global_stds = summary_df[std_cols].mean()
+
+            # 构建全局汇总行，其他列置为空字符串以保持列结构一致
+            global_row = {col: '' for col in summary_df.columns}
+            global_row['category'] = 'ALL'
+            for c in mean_cols:
+                global_row[c] = global_means[c]
+            for c in std_cols:
+                global_row[c] = global_stds[c]
+
+            # 将所有 category 行按原顺序写出，之后追加空行与全局汇总行
+            final_rows = [r.to_dict() for _, r in summary_df.iterrows()]
+            # 空行
+            final_rows.append({col: '' for col in summary_df.columns})
+            # 全局汇总行
+            final_rows.append(global_row)
+
+            final_summary_df = pd.DataFrame(final_rows)
+        else:
+            final_summary_df = summary_df
+
+        final_summary_df.to_csv(summary_path, index=False)
         print(f"Summary report saved to {summary_path}")
 
         # # 5) 同时保留原始兼容 CSV（平铺形式），以便 Evaluator 继续使用
